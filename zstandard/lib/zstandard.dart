@@ -5,6 +5,11 @@ import 'package:zstandard/src/zstandard_impl_web.dart'
 import 'package:zstandard_platform_interface/zstandard_platform_interface.dart';
 
 export 'src/zstandard_ext.dart';
+export 'package:zstandard_platform_interface/zstandard_platform_interface.dart'
+    show
+        ZstandardTarExtractionProgress,
+        ZstandardTarExtractionResult,
+        ZstandardTarExtractionStage;
 
 /// Main entry point for Zstandard compression and decompression in Flutter.
 ///
@@ -54,6 +59,23 @@ class Zstandard {
   ///
   /// Returns the decompressed bytes, or null if decompression failed
   /// (e.g. invalid or corrupted input).
-  Future<Uint8List?> decompress(Uint8List data) =>
-      instance.decompress(data);
+  Future<Uint8List?> decompress(Uint8List data) => instance.decompress(data);
+
+  /// Extracts a `.tar.zst` archive to [outputDirectoryPath].
+  ///
+  /// Supported by the iOS and Android platform implementations.
+  Future<ZstandardTarExtractionResult> extractTarZst({
+    required String archivePath,
+    required String outputDirectoryPath,
+    String? temporaryDirectoryPath,
+    bool overwrite = false,
+    void Function(ZstandardTarExtractionProgress progress)? onProgress,
+  }) =>
+      instance.extractTarZst(
+        archivePath: archivePath,
+        outputDirectoryPath: outputDirectoryPath,
+        temporaryDirectoryPath: temporaryDirectoryPath,
+        overwrite: overwrite,
+        onProgress: onProgress,
+      );
 }

@@ -1,6 +1,7 @@
 // ignore_for_file: avoid_print
 /// Reusable benchmark suite for zstandard_cli. Outputs JSON for regression detection.
 /// Run: dart run benchmark/benchmark_suite.dart [--output=path.json]
+library;
 
 import 'dart:convert';
 import 'dart:io';

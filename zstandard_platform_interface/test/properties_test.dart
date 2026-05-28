@@ -5,7 +5,9 @@ import 'package:kiri_check/kiri_check.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:zstandard_platform_interface/zstandard_platform_interface.dart';
 
-class RoundtripMockPlatform with MockPlatformInterfaceMixin implements ZstandardPlatform {
+class RoundtripMockPlatform
+    with MockPlatformInterfaceMixin
+    implements ZstandardPlatform {
   @override
   Future<String?> getPlatformVersion() => Future.value('mock');
 
@@ -17,6 +19,17 @@ class RoundtripMockPlatform with MockPlatformInterfaceMixin implements Zstandard
   @override
   Future<Uint8List?> decompress(Uint8List data) async {
     return Uint8List.fromList(List<int>.from(data));
+  }
+
+  @override
+  Future<ZstandardTarExtractionResult> extractTarZst({
+    required String archivePath,
+    required String outputDirectoryPath,
+    String? temporaryDirectoryPath,
+    bool overwrite = false,
+    void Function(ZstandardTarExtractionProgress progress)? onProgress,
+  }) {
+    throw UnsupportedError('mock');
   }
 }
 
@@ -30,9 +43,11 @@ void main() {
           ZstandardPlatform.instance = RoundtripMockPlatform();
           try {
             final input = Uint8List.fromList(data);
-            final compressed = await ZstandardPlatform.instance.compress(input, 3);
+            final compressed =
+                await ZstandardPlatform.instance.compress(input, 3);
             expect(compressed, isNotNull);
-            final decompressed = await ZstandardPlatform.instance.decompress(compressed!);
+            final decompressed =
+                await ZstandardPlatform.instance.decompress(compressed!);
             expect(decompressed, isNotNull);
             expect(List<int>.from(decompressed!), data);
           } finally {

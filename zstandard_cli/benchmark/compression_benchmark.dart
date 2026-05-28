@@ -5,6 +5,7 @@
 ///
 /// Use for regression detection: run before/after changes and compare
 /// throughput (MB/s) and roundtrip correctness.
+library;
 
 import 'dart:typed_data';
 

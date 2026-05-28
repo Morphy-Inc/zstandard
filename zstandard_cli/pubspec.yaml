@@ -1,4 +1,5 @@
 name: zstandard_cli
+publish_to: none
 description: CLI implementation of zstandard. For desktops.
 version: 1.5.0
 
@@ -12,7 +13,8 @@ dependencies:
   ffi: ^2.2.0
   path: ^1.9.1
   platform: ^3.1.6
-  zstandard_native: ^1.5.0
+  zstandard_native:
+    path: ../zstandard_native
 
 dev_dependencies:
   coverage: ^1.15.0

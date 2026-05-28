@@ -5,6 +5,7 @@ import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/services.dart';
+import 'package:zstandard_native/zstandard_native.dart' as native;
 import 'package:zstandard_platform_interface/zstandard_platform_interface.dart';
 
 import 'package:zstandard_native/zstandard_native_bindings.dart';
@@ -87,12 +88,11 @@ class ZstandardIOS extends ZstandardPlatform {
 
     final int decompressedSizeExpected =
         _bindings.ZSTD_getFrameContentSize(src.cast(), compressedSize);
-    final int dstCapacity =
-        (decompressedSizeExpected != contentSizeUnknown &&
-                decompressedSizeExpected != contentSizeError &&
-                decompressedSizeExpected > 0)
-            ? decompressedSizeExpected
-            : compressedSize * 20;
+    final int dstCapacity = (decompressedSizeExpected != contentSizeUnknown &&
+            decompressedSizeExpected != contentSizeError &&
+            decompressedSizeExpected > 0)
+        ? decompressedSizeExpected
+        : compressedSize * 20;
     final Pointer<Uint8> dst = malloc.allocate<Uint8>(dstCapacity);
 
     try {
@@ -112,6 +112,53 @@ class ZstandardIOS extends ZstandardPlatform {
       malloc.free(dst);
     }
   }
+
+  @override
+  Future<ZstandardTarExtractionResult> extractTarZst({
+    required String archivePath,
+    required String outputDirectoryPath,
+    String? temporaryDirectoryPath,
+    bool overwrite = false,
+    void Function(ZstandardTarExtractionProgress progress)? onProgress,
+  }) async {
+    final result = await native.extractTarZstArchive(
+      bindings: _bindings,
+      archivePath: archivePath,
+      outputDirectoryPath: outputDirectoryPath,
+      temporaryDirectoryPath: temporaryDirectoryPath,
+      overwrite: overwrite,
+      onProgress: onProgress == null
+          ? null
+          : (progress) => onProgress(_mapTarExtractionProgress(progress)),
+    );
+    return ZstandardTarExtractionResult(
+      outputDirectoryPath: result.outputDirectoryPath,
+      entriesExtracted: result.entriesExtracted,
+      compressedBytesRead: result.compressedBytesRead,
+      tarBytesWritten: result.tarBytesWritten,
+    );
+  }
+}
+
+ZstandardTarExtractionProgress _mapTarExtractionProgress(
+  native.ZstandardNativeTarExtractionProgress progress,
+) {
+  return ZstandardTarExtractionProgress(
+    stage: switch (progress.stage) {
+      native.ZstandardNativeTarExtractionStage.decompressing =>
+        ZstandardTarExtractionStage.decompressing,
+      native.ZstandardNativeTarExtractionStage.extracting =>
+        ZstandardTarExtractionStage.extracting,
+      native.ZstandardNativeTarExtractionStage.completed =>
+        ZstandardTarExtractionStage.completed,
+    },
+    progress: progress.progress,
+    compressedBytesRead: progress.compressedBytesRead,
+    totalCompressedBytes: progress.totalCompressedBytes,
+    tarBytesWritten: progress.tarBytesWritten,
+    entriesExtracted: progress.entriesExtracted,
+    currentEntry: progress.currentEntry,
+  );
 }
 
 int compress(

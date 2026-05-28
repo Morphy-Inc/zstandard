@@ -1,4 +1,5 @@
 name: zstandard_windows
+publish_to: none
 description: Windows platform implementation of zstandard
 version: 1.5.0
 
@@ -12,8 +13,10 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  zstandard_platform_interface: ^1.5.0
-  zstandard_native: ^1.5.0
+  zstandard_platform_interface:
+    path: ../zstandard_platform_interface
+  zstandard_native:
+    path: ../zstandard_native
   ffi: ^2.2.0
 
 dev_dependencies:

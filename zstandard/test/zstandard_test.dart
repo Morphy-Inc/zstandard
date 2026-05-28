@@ -6,7 +6,9 @@ import 'package:zstandard/zstandard.dart';
 import 'package:zstandard_platform_interface/zstandard_platform_interface.dart';
 import 'package:zstandard/src/platform_manager.dart';
 
-class MockZstandardPlatform with MockPlatformInterfaceMixin implements ZstandardPlatform {
+class MockZstandardPlatform
+    with MockPlatformInterfaceMixin
+    implements ZstandardPlatform {
   @override
   Future<String?> getPlatformVersion() => Future.value('MockPlatform 1.0');
 
@@ -18,6 +20,32 @@ class MockZstandardPlatform with MockPlatformInterfaceMixin implements Zstandard
   @override
   Future<Uint8List?> decompress(Uint8List data) async {
     return Uint8List.fromList(<int>[1, 2, 3, 4, 5]); // fake decompressed
+  }
+
+  @override
+  Future<ZstandardTarExtractionResult> extractTarZst({
+    required String archivePath,
+    required String outputDirectoryPath,
+    String? temporaryDirectoryPath,
+    bool overwrite = false,
+    void Function(ZstandardTarExtractionProgress progress)? onProgress,
+  }) async {
+    onProgress?.call(
+      const ZstandardTarExtractionProgress(
+        stage: ZstandardTarExtractionStage.completed,
+        progress: 1,
+        compressedBytesRead: 3,
+        totalCompressedBytes: 3,
+        tarBytesWritten: 5,
+        entriesExtracted: 1,
+      ),
+    );
+    return ZstandardTarExtractionResult(
+      outputDirectoryPath: outputDirectoryPath,
+      entriesExtracted: 1,
+      compressedBytesRead: 3,
+      tarBytesWritten: 5,
+    );
   }
 }
 
@@ -66,6 +94,22 @@ void main() {
       final decompressed = await z.decompress(data);
       expect(decompressed, isNotNull);
       expect(decompressed, Uint8List.fromList(<int>[1, 2, 3, 4, 5]));
+    });
+
+    test('extractTarZst forwards to platform and reports progress', () async {
+      final z = Zstandard();
+      final progressEvents = <ZstandardTarExtractionProgress>[];
+      final result = await z.extractTarZst(
+        archivePath: 'archive.tar.zst',
+        outputDirectoryPath: 'output',
+        onProgress: progressEvents.add,
+      );
+
+      expect(result.outputDirectoryPath, 'output');
+      expect(result.entriesExtracted, 1);
+      expect(progressEvents, hasLength(1));
+      expect(
+          progressEvents.single.stage, ZstandardTarExtractionStage.completed);
     });
 
     test('instance returns registered platform', () {

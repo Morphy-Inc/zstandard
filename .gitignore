@@ -1,4 +1,5 @@
 zstandard_cli/zstd/
+zstandard_ios/ios/Classes/zstd/
 .zstd_upstream/
 .idea/
 */.idea/

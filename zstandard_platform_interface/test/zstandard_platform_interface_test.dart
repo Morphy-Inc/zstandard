@@ -5,7 +5,9 @@ import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:zstandard_platform_interface/src/zstandard_platform_interface_method_channel.dart';
 import 'package:zstandard_platform_interface/zstandard_platform_interface.dart';
 
-class MockZstandardPlatform with MockPlatformInterfaceMixin implements ZstandardPlatform {
+class MockZstandardPlatform
+    with MockPlatformInterfaceMixin
+    implements ZstandardPlatform {
   @override
   Future<String?> getPlatformVersion() => Future.value('42');
 
@@ -18,6 +20,22 @@ class MockZstandardPlatform with MockPlatformInterfaceMixin implements Zstandard
   Future<Uint8List?> decompress(Uint8List data) async {
     return Uint8List.fromList(<int>[4, 5, 6]); // deterministic for testing
   }
+
+  @override
+  Future<ZstandardTarExtractionResult> extractTarZst({
+    required String archivePath,
+    required String outputDirectoryPath,
+    String? temporaryDirectoryPath,
+    bool overwrite = false,
+    void Function(ZstandardTarExtractionProgress progress)? onProgress,
+  }) async {
+    return ZstandardTarExtractionResult(
+      outputDirectoryPath: outputDirectoryPath,
+      entriesExtracted: 1,
+      compressedBytesRead: 3,
+      tarBytesWritten: 6,
+    );
+  }
 }
 
 class MockB with MockPlatformInterfaceMixin implements ZstandardPlatform {
@@ -29,6 +47,22 @@ class MockB with MockPlatformInterfaceMixin implements ZstandardPlatform {
   @override
   Future<Uint8List?> decompress(Uint8List data) =>
       Future.value(Uint8List.fromList([8, 8]));
+  @override
+  Future<ZstandardTarExtractionResult> extractTarZst({
+    required String archivePath,
+    required String outputDirectoryPath,
+    String? temporaryDirectoryPath,
+    bool overwrite = false,
+    void Function(ZstandardTarExtractionProgress progress)? onProgress,
+  }) =>
+      Future.value(
+        ZstandardTarExtractionResult(
+          outputDirectoryPath: outputDirectoryPath,
+          entriesExtracted: 2,
+          compressedBytesRead: 9,
+          tarBytesWritten: 8,
+        ),
+      );
 }
 
 class OtherMock with MockPlatformInterfaceMixin implements ZstandardPlatform {
@@ -40,6 +74,22 @@ class OtherMock with MockPlatformInterfaceMixin implements ZstandardPlatform {
   @override
   Future<Uint8List?> decompress(Uint8List data) =>
       Future.value(Uint8List.fromList([100]));
+  @override
+  Future<ZstandardTarExtractionResult> extractTarZst({
+    required String archivePath,
+    required String outputDirectoryPath,
+    String? temporaryDirectoryPath,
+    bool overwrite = false,
+    void Function(ZstandardTarExtractionProgress progress)? onProgress,
+  }) =>
+      Future.value(
+        ZstandardTarExtractionResult(
+          outputDirectoryPath: outputDirectoryPath,
+          entriesExtracted: 3,
+          compressedBytesRead: 99,
+          tarBytesWritten: 100,
+        ),
+      );
 }
 
 void main() {
@@ -70,6 +120,16 @@ void main() {
       await expectLater(
         () async => await defaultPlatform.decompress(data),
         throwsA(isA<UnimplementedError>()),
+      );
+    });
+
+    test('extractTarZst throws UnsupportedError', () async {
+      await expectLater(
+        () async => await defaultPlatform.extractTarZst(
+          archivePath: 'archive.tar.zst',
+          outputDirectoryPath: 'output',
+        ),
+        throwsA(isA<UnsupportedError>()),
       );
     });
   });
@@ -112,6 +172,18 @@ void main() {
       expect(decompressed, isNotNull);
       expect(decompressed, Uint8List.fromList(<int>[4, 5, 6]));
     });
+
+    test('extractTarZst returns mock result after registration', () async {
+      final mock = MockZstandardPlatform();
+      ZstandardPlatform.instance = mock;
+
+      final result = await ZstandardPlatform.instance.extractTarZst(
+        archivePath: 'archive.tar.zst',
+        outputDirectoryPath: 'output',
+      );
+      expect(result.outputDirectoryPath, 'output');
+      expect(result.entriesExtracted, 1);
+    });
   });
 
   group('Multiple mock platforms', () {
@@ -131,7 +203,8 @@ void main() {
       expect(await ZstandardPlatform.instance.getPlatformVersion(), '42');
 
       ZstandardPlatform.instance = MockB();
-      expect(await ZstandardPlatform.instance.getPlatformVersion(), 'PlatformB');
+      expect(
+          await ZstandardPlatform.instance.getPlatformVersion(), 'PlatformB');
       final data = Uint8List.fromList([1]);
       final c = await ZstandardPlatform.instance.compress(data, 3);
       expect(c, Uint8List.fromList([9, 9]));

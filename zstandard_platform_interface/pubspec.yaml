@@ -1,4 +1,5 @@
 name: zstandard_platform_interface
+publish_to: none
 description: A common platform interface for the zstandard plugin.
 version: 1.5.0
 

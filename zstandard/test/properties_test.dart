@@ -7,7 +7,9 @@ import 'package:zstandard/zstandard.dart';
 import 'package:zstandard_platform_interface/zstandard_platform_interface.dart';
 
 /// Mock platform that implements identity roundtrip for property tests.
-class RoundtripMockPlatform with MockPlatformInterfaceMixin implements ZstandardPlatform {
+class RoundtripMockPlatform
+    with MockPlatformInterfaceMixin
+    implements ZstandardPlatform {
   @override
   Future<String?> getPlatformVersion() => Future.value('mock');
 
@@ -19,6 +21,17 @@ class RoundtripMockPlatform with MockPlatformInterfaceMixin implements Zstandard
   @override
   Future<Uint8List?> decompress(Uint8List data) async {
     return Uint8List.fromList(List<int>.from(data));
+  }
+
+  @override
+  Future<ZstandardTarExtractionResult> extractTarZst({
+    required String archivePath,
+    required String outputDirectoryPath,
+    String? temporaryDirectoryPath,
+    bool overwrite = false,
+    void Function(ZstandardTarExtractionProgress progress)? onProgress,
+  }) {
+    throw UnsupportedError('mock');
   }
 }
 
@@ -48,7 +61,8 @@ void main() {
       );
     });
 
-    property('determinism with mock: same input and level produce same output', () {
+    property('determinism with mock: same input and level produce same output',
+        () {
       final saved = ZstandardPlatform.instance;
       Zstandard().instance;
       ZstandardPlatform.instance = RoundtripMockPlatform();
