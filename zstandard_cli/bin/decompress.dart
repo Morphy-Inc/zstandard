@@ -22,10 +22,11 @@ void main(List<String> args) async {
     return;
   }
 
-  print('Decompressing ${file.path} ${await getFileSize(file)}');
+  final inputBytes = file.readAsBytesSync();
+  print('Decompressing ${file.path} ${formatByteSize(inputBytes.length)}');
 
   final compressed = await cli.decompress(
-    file.readAsBytesSync(),
+    inputBytes,
   );
   if (compressed == null) {
     print('Error decompressing: $filePath');
@@ -44,5 +45,5 @@ void main(List<String> args) async {
   }
 
   print(
-      'Decompressed ${decompressedFile.path} ${await getFileSize(decompressedFile)} \n');
+      'Decompressed ${decompressedFile.path} ${formatByteSize(compressed.length)} \n');
 }

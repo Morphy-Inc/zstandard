@@ -93,7 +93,8 @@ Future<ZstandardNativeTarExtractionResult> extractTarZstArchive({
   void Function(ZstandardNativeTarExtractionProgress progress)? onProgress,
 }) async {
   final archiveFile = File(archivePath);
-  final compressedBytes = await archiveFile.length();
+  final totalCompressedBytes =
+      onProgress == null ? null : await _tryFileLength(archiveFile);
   final outputDirectory = Directory(outputDirectoryPath);
   await outputDirectory.create(recursive: true);
 
@@ -105,34 +106,34 @@ Future<ZstandardNativeTarExtractionResult> extractTarZstArchive({
   final tempTar = File(path.join(tempRoot.path, 'archive.tar'));
 
   try {
-    final decompressedBytes = await _decompressZstdFileToTar(
+    final decompressed = await _decompressZstdFileToTar(
       bindings: bindings,
       source: archiveFile,
       target: tempTar,
-      totalCompressedBytes: compressedBytes,
+      totalCompressedBytes: totalCompressedBytes,
       onProgress: onProgress,
     );
     final entriesExtracted = await _extractTarFile(
       tarFile: tempTar,
       outputDirectory: outputDirectory,
       overwrite: overwrite,
-      compressedBytesRead: compressedBytes,
-      tarBytesWritten: decompressedBytes,
+      compressedBytesRead: decompressed.compressedBytesRead,
+      tarBytesWritten: decompressed.tarBytesWritten,
       onProgress: onProgress,
     );
     final result = ZstandardNativeTarExtractionResult(
       outputDirectoryPath: outputDirectory.path,
       entriesExtracted: entriesExtracted,
-      compressedBytesRead: compressedBytes,
-      tarBytesWritten: decompressedBytes,
+      compressedBytesRead: decompressed.compressedBytesRead,
+      tarBytesWritten: decompressed.tarBytesWritten,
     );
     onProgress?.call(
       ZstandardNativeTarExtractionProgress(
         stage: ZstandardNativeTarExtractionStage.completed,
         progress: 1,
-        compressedBytesRead: compressedBytes,
-        totalCompressedBytes: compressedBytes,
-        tarBytesWritten: decompressedBytes,
+        compressedBytesRead: decompressed.compressedBytesRead,
+        totalCompressedBytes: decompressed.compressedBytesRead,
+        tarBytesWritten: decompressed.tarBytesWritten,
         entriesExtracted: entriesExtracted,
       ),
     );
@@ -146,11 +147,12 @@ Future<ZstandardNativeTarExtractionResult> extractTarZstArchive({
   }
 }
 
-Future<int> _decompressZstdFileToTar({
+Future<({int compressedBytesRead, int tarBytesWritten})>
+    _decompressZstdFileToTar({
   required ZstandardNativeBindings bindings,
   required File source,
   required File target,
-  required int totalCompressedBytes,
+  required int? totalCompressedBytes,
   required void Function(ZstandardNativeTarExtractionProgress progress)?
       onProgress,
 }) async {
@@ -210,7 +212,8 @@ Future<int> _decompressZstdFileToTar({
           progress: _weightedProgress(
             stageStart: 0,
             stageEnd: 0.5,
-            stageProgress: _ratio(compressedBytesRead, totalCompressedBytes),
+            stageProgress:
+                _ratio(compressedBytesRead, totalCompressedBytes ?? 0),
           ),
           compressedBytesRead: compressedBytesRead,
           totalCompressedBytes: totalCompressedBytes,
@@ -225,7 +228,10 @@ Future<int> _decompressZstdFileToTar({
     if (lastResult != 0) {
       throw const FormatException('Incomplete zstd frame');
     }
-    return tarBytesWritten;
+    return (
+      compressedBytesRead: compressedBytesRead,
+      tarBytesWritten: tarBytesWritten,
+    );
   } finally {
     await writer?.close();
     await reader?.close();
@@ -247,7 +253,7 @@ Future<int> _extractTarFile({
       onProgress,
 }) async {
   final rootPath = path.normalize(outputDirectory.absolute.path);
-  final tarLength = await tarFile.length();
+  final tarLength = tarBytesWritten;
   final reader = await tarFile.open();
   var entriesExtracted = 0;
   var tarBytesRead = 0;
@@ -438,6 +444,14 @@ Future<String> _prepareFile(
     await File(outputPath).delete();
   }
   return outputPath;
+}
+
+Future<int?> _tryFileLength(File file) async {
+  try {
+    return await file.length();
+  } on FileSystemException {
+    return null;
+  }
 }
 
 bool _isZeroBlock(Uint8List bytes) => bytes.every((byte) => byte == 0);

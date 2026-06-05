@@ -28,10 +28,11 @@ void main(List<String> args) async {
     return;
   }
 
-  print('Compressing ${file.path} ${await getFileSize(file)}');
+  final inputBytes = file.readAsBytesSync();
+  print('Compressing ${file.path} ${formatByteSize(inputBytes.length)}');
 
   final compressed = await cli.compress(
-    file.readAsBytesSync(),
+    inputBytes,
     compressionLevel: compressionLevel,
   );
   if (compressed == null) {
@@ -48,5 +49,5 @@ void main(List<String> args) async {
   }
 
   print(
-      'Compressed ${compressedFile.path} ${await getFileSize(compressedFile)} \n');
+      'Compressed ${compressedFile.path} ${formatByteSize(compressed.length)} \n');
 }
