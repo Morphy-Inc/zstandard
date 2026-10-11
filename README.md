@@ -151,4 +151,4 @@ void main() async {
 
 ## License
 
-This project uses code from the original [facebook/zstd](https://github.com/facebook/zstd/tree/dev/lib) repository. Please see the LICENSE file for more information.
+This project uses code from the original [facebook/zstd](https://github.com/facebook/zstd/tree/v1.5.7/lib) repository. Please see the LICENSE file for more information.

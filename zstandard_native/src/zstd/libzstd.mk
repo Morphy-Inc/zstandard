@@ -28,8 +28,12 @@ LIB_BINDIR ?= $(LIB_SRCDIR)
 # configures a bunch of other variables to space-optimized defaults.
 ZSTD_LIB_MINIFY ?= 0
 
-# Legacy support disabled by default
-ZSTD_LEGACY_SUPPORT ?= 0
+# Legacy support
+ifneq ($(ZSTD_LIB_MINIFY), 0)
+  ZSTD_LEGACY_SUPPORT ?= 0
+else
+  ZSTD_LEGACY_SUPPORT ?= 5
+endif
 ZSTD_LEGACY_MULTITHREADED_API ?= 0
 
 # Build size optimizations
@@ -202,10 +206,7 @@ endif
 endif
 CPPFLAGS  += -DZSTD_LEGACY_SUPPORT=$(ZSTD_LEGACY_SUPPORT)
 
-# Include install_oses.mk from the same directory
-include $(dir $(lastword $(MAKEFILE_LIST)))/install_oses.mk
-LN ?= ln
-CP ?= cp -f
+UNAME := $(shell sh -c 'MSYSTEM="MSYS" uname')
 
 ifndef BUILD_DIR
 ifeq ($(UNAME), Darwin)

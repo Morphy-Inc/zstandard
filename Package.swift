@@ -32,7 +32,6 @@ let package = Package(
                 "BUCK",
                 "Makefile",
                 "README.md",
-                "install_oses.mk",
                 "libzstd.mk",
                 "libzstd.pc.in",
             ],
@@ -43,6 +42,10 @@ let package = Package(
                 // Empty, like the sources' own `#define`s, so they don't
                 // trigger macro-redefinition warnings.
                 .define("ZSTD_STATIC_LINKING_ONLY", to: ""),
+                // Upstream's default level. Clang still applies zstd's
+                // module.modulemap, whose exhaustive config_macros warn when
+                // zstd.h's own fallback definition is visible at a re-import.
+                .define("ZSTD_CLEVEL_DEFAULT", to: "3"),
                 .define("ZSTD_DISABLE_ASM"),
             ],
             // Flutter's SwiftPM integration links this target statically into

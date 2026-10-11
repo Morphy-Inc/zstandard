@@ -2176,13 +2176,13 @@ typedef ZSTD_DDict = ZSTD_DDict_s;
 
 const int ZSTD_VERSION_MAJOR = 1;
 
-const int ZSTD_VERSION_MINOR = 6;
+const int ZSTD_VERSION_MINOR = 5;
 
-const int ZSTD_VERSION_RELEASE = 0;
+const int ZSTD_VERSION_RELEASE = 7;
 
-const int ZSTD_VERSION_NUMBER = 10600;
+const int ZSTD_VERSION_NUMBER = 10507;
 
-const String ZSTD_VERSION_STRING = '1.6.0';
+const String ZSTD_VERSION_STRING = '1.5.7';
 
 const int ZSTD_CLEVEL_DEFAULT = 3;
 
