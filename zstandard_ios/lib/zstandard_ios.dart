@@ -15,10 +15,18 @@ export 'zstandard_ext.dart';
 const String _libName = 'zstandard_ios';
 
 final DynamicLibrary _dylib = () {
-  if (Platform.isIOS) {
-    return DynamicLibrary.open('$_libName.framework/$_libName');
+  if (!Platform.isIOS) {
+    throw UnsupportedError(
+        'Platform not supported: ${Platform.operatingSystem}');
   }
-  throw UnsupportedError('Platform not supported: ${Platform.operatingSystem}');
+  // CocoaPods embeds a dynamic framework. Flutter's SwiftPM integration
+  // links the same C target statically into the application, so those symbols
+  // are exposed through the process instead of a standalone framework.
+  try {
+    return DynamicLibrary.open('$_libName.framework/$_libName');
+  } on ArgumentError {
+    return DynamicLibrary.process();
+  }
 }();
 
 final ZstandardNativeBindings _bindings = ZstandardNativeBindings(_dylib);

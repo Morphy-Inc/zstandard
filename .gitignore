@@ -5,6 +5,8 @@ zstandard_ios/ios/Classes/zstd/
 */.idea/
 */build/
 */coverage/
+.build/
+.swiftpm/
 
 */*.lock
 .env
