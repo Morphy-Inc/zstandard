@@ -12,7 +12,7 @@ This Flutter plugin provides a native implementation of the zstd compression alg
 |   Native    |        FFI         |        FFI         |          WebAssembly           |                 FFI                  |                  FFI                   |                 FFI                  |                ❌                |
 | Precompiled |         No         |         No         |           Yes (wasm)           |                  No                  |                   No                   |                  No                  |                ❌                 |
 
-> **Note:** The C files for the compression library are sourced from the official [facebook/zstd](https://github.com/facebook/zstd/tree/dev/lib) repository.
+> **Note:** The C files for the compression library are sourced from the official [facebook/zstd](https://github.com/facebook/zstd/tree/v1.5.7/lib) repository.
 
 > For command-line usage on desktops, refer to the [zstandard_cli](https://pub.dev/packages/zstandard_cli) package.
 

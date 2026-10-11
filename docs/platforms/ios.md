@@ -22,7 +22,7 @@ No additional setup is required for normal use. The plugin registers the iOS imp
 
 ## Architecture
 
-- **Native layer**: The facebook/zstd C library is synced from the repo root `zstd/` into the package’s `ios/Classes/zstd/` (via the podspec’s prepare_command and script phases) and built as part of the CocoaPods target. It is linked into the app and loaded by the Dart plugin via FFI.
+- **Native layer**: The facebook/zstd C library lives in `zstandard_native/src/zstd/`. With Swift Package Manager, `ios/zstandard_ios/Package.swift` depends on the repository-level `Package.swift`, which compiles those sources in place and links them statically into the app; Dart resolves the symbols through `DynamicLibrary.process()`. With CocoaPods, the podspec syncs the same sources into the ignored `ios/Classes/zstd/` and builds them into the `zstandard_ios` framework, which Dart opens by name.
 - **Dart layer**: The package uses Dart FFI and generated bindings to call `ZSTD_compress`, `ZSTD_decompress`, `ZSTD_compressBound`, and `ZSTD_getFrameContentSize`.
 - **Isolates**: The implementation may use a helper isolate for async compression/decompression to avoid blocking the UI thread.
 
@@ -49,9 +49,11 @@ final decompressed = await compressed?.decompress();
 
 If you are developing the zstandard_ios package:
 
-1. The canonical zstd source is at the repo root `zstd/`; the podspec syncs it into `ios/Classes/zstd/` at install/build time.
-2. The project uses a Podspec and CocoaPods to build the framework.
-3. FFI bindings are generated (e.g. with `ffigen`) from the zstd headers.
+1. The canonical zstd source is `zstandard_native/src/zstd/`. The repository-level `Package.swift` exposes it as the `zstandard-native` SwiftPM product; `zstandard_native/src/zstd/include/` only holds bridge headers for SwiftPM.
+2. `ios/zstandard_ios/Package.swift` is the SwiftPM entry point Flutter uses. It resolves the repository root from its real (symlink-resolved) location; set `ZSTANDARD_NATIVE_PACKAGE_PATH` to point it at another checkout.
+3. Release builds dead-strip unreferenced code from the app executable, so every `ZSTD_*` function Dart looks up must be listed in the `-u` linker flags of the repository-level `Package.swift`.
+4. The podspec keeps CocoaPods support by syncing the sources into `ios/Classes/zstd/` at install/build time.
+5. FFI bindings are generated (e.g. with `ffigen`) from the zstd headers.
 
 See the package’s `ios/` directory and the repo’s [Building](development/building.md) guide.
 

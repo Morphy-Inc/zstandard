@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Update the canonical zstd source in zstandard_native/src/zstd/ from the official repo.
 # Usage: from repo root, run: ./scripts/update_zstd.sh
-# Optional: ./scripts/update_zstd.sh v1.5.6   (tag or branch; default: dev)
+# Optional: ./scripts/update_zstd.sh <tag or branch>   (default: the pinned
+# release below). Prefer release tags over dev, whose version number is
+# unreleased.
 #
 # Requires: git. After this, run zstandard_ios/scripts/sync_zstd.sh and
 # zstandard_macos/scripts/sync_zstd.sh (from repo root), and optionally
@@ -10,7 +12,7 @@
 set -e
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ZSTD_DIR="$ROOT/zstandard_native/src/zstd"
-REF="${1:-dev}"
+REF="${1:-v1.5.7}"
 
 echo "Fetching zstd from https://github.com/facebook/zstd.git (ref: $REF)..."
 TMP="$ROOT/.zstd_upstream"
@@ -19,7 +21,8 @@ git clone --depth 1 --branch "$REF" https://github.com/facebook/zstd.git "$TMP"
 
 mkdir -p "$ZSTD_DIR"
 echo "Copying lib/ into $ZSTD_DIR ..."
-rsync -a --delete "$TMP/lib/" "$ZSTD_DIR/"
+# include/ holds this repo's SwiftPM public-header bridges, not upstream files.
+rsync -a --delete --exclude /include/ "$TMP/lib/" "$ZSTD_DIR/"
 rm -rf "$TMP"
 
 if [[ ! -f "$ZSTD_DIR/zstd.h" ]]; then
