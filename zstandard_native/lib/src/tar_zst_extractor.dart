@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io';
@@ -11,10 +12,10 @@ import '../zstandard_native_bindings.dart';
 
 /// Native extraction phase for a `.tar.zst` archive.
 enum ZstandardNativeTarExtractionStage {
-  /// The zstd stream is being decompressed into a temporary tar file.
+  /// The zstd decoder is starting.
   decompressing,
 
-  /// The temporary tar file is being extracted to disk.
+  /// Decompressed tar entries are being extracted to disk.
   extracting,
 
   /// Extraction has completed.
@@ -46,7 +47,7 @@ class ZstandardNativeTarExtractionProgress {
   /// Total compressed input bytes, when known.
   final int? totalCompressedBytes;
 
-  /// Number of decompressed tar bytes written.
+  /// Number of tar bytes produced by the zstd decoder.
   final int tarBytesWritten;
 
   /// Number of tar entries extracted so far.
@@ -75,15 +76,14 @@ class ZstandardNativeTarExtractionResult {
   /// Number of compressed input bytes consumed.
   final int compressedBytesRead;
 
-  /// Number of decompressed tar bytes written.
+  /// Number of tar bytes produced by the zstd decoder.
   final int tarBytesWritten;
 }
 
-/// Extracts [archivePath] as a `.tar.zst` archive into [outputDirectoryPath].
-///
-/// This avoids materializing the full compressed archive or decompressed tar in
-/// Dart memory. The zstd stream is decompressed into a temporary tar file, and
-/// that tar file is then extracted with asynchronous chunked file I/O.
+/// Extracts a .tar.zst file without writing an intermediate tar. Stage the
+/// entries on the destination filesystem so a late frame error cannot replace
+/// existing files, and publishing each file requires only a rename.
+/// [temporaryDirectoryPath] is retained for compatibility with existing callers.
 Future<ZstandardNativeTarExtractionResult> extractTarZstArchive({
   required ZstandardNativeBindings bindings,
   required String archivePath,
@@ -92,327 +92,256 @@ Future<ZstandardNativeTarExtractionResult> extractTarZstArchive({
   bool overwrite = false,
   void Function(ZstandardNativeTarExtractionProgress progress)? onProgress,
 }) async {
-  final archiveFile = File(archivePath);
-  final totalCompressedBytes =
-      onProgress == null ? null : await _tryFileLength(archiveFile);
-  final outputDirectory = Directory(outputDirectoryPath);
-  await outputDirectory.create(recursive: true);
-
-  final tempParent = temporaryDirectoryPath == null
-      ? Directory.systemTemp
-      : Directory(temporaryDirectoryPath);
-  await tempParent.create(recursive: true);
-  final tempRoot = await tempParent.createTemp('zstandard_tar_zst_');
-  final tempTar = File(path.join(tempRoot.path, 'archive.tar'));
-
+  final source = File(archivePath);
+  final progress = _Progress(
+    onProgress == null ? null : await _tryFileLength(source),
+    onProgress,
+  );
+  final destination = Directory(outputDirectoryPath);
+  await destination.create(recursive: true);
+  final staged = await destination.createTemp('.zstandard-');
   try {
-    final decompressed = await _decompressZstdFileToTar(
-      bindings: bindings,
-      source: archiveFile,
-      target: tempTar,
-      totalCompressedBytes: totalCompressedBytes,
-      onProgress: onProgress,
-    );
-    final entriesExtracted = await _extractTarFile(
-      tarFile: tempTar,
-      outputDirectory: outputDirectory,
-      overwrite: overwrite,
-      compressedBytesRead: decompressed.compressedBytesRead,
-      tarBytesWritten: decompressed.tarBytesWritten,
-      onProgress: onProgress,
-    );
-    final result = ZstandardNativeTarExtractionResult(
-      outputDirectoryPath: outputDirectory.path,
-      entriesExtracted: entriesExtracted,
-      compressedBytesRead: decompressed.compressedBytesRead,
-      tarBytesWritten: decompressed.tarBytesWritten,
-    );
-    onProgress?.call(
-      ZstandardNativeTarExtractionProgress(
-        stage: ZstandardNativeTarExtractionStage.completed,
-        progress: 1,
-        compressedBytesRead: decompressed.compressedBytesRead,
-        totalCompressedBytes: decompressed.compressedBytesRead,
-        tarBytesWritten: decompressed.tarBytesWritten,
-        entriesExtracted: entriesExtracted,
-      ),
-    );
-    return result;
-  } finally {
+    final reader = _TarInput(_decompress(bindings, source, progress));
     try {
-      await tempRoot.delete(recursive: true);
-    } catch (_) {
-      // Temporary extraction cleanup is best-effort.
+      await _extractEntries(reader, staged.absolute.path, overwrite, progress);
+      // Tar can end before the frame checksum, padding or subsequent frames.
+      await reader.drain();
+    } finally {
+      await reader.close();
     }
+    await _publish(staged, destination, staged.absolute.path, overwrite);
+    progress.report(ZstandardNativeTarExtractionStage.completed);
+    return ZstandardNativeTarExtractionResult(
+      outputDirectoryPath: destination.path,
+      entriesExtracted: progress.entries,
+      compressedBytesRead: progress.compressedBytes,
+      tarBytesWritten: progress.tarBytes,
+    );
+  } finally {
+    await staged.delete(recursive: true);
   }
 }
 
-Future<({int compressedBytesRead, int tarBytesWritten})>
-    _decompressZstdFileToTar({
-  required ZstandardNativeBindings bindings,
-  required File source,
-  required File target,
-  required int? totalCompressedBytes,
-  required void Function(ZstandardNativeTarExtractionProgress progress)?
-      onProgress,
-}) async {
+class _Progress {
+  _Progress(this.total, this.callback);
+
+  final int? total;
+  final void Function(ZstandardNativeTarExtractionProgress)? callback;
+  int compressedBytes = 0;
+  int tarBytes = 0;
+  int entries = 0;
+  String? entry;
+
+  void report(ZstandardNativeTarExtractionStage stage) {
+    final complete = stage == ZstandardNativeTarExtractionStage.completed;
+    callback?.call(ZstandardNativeTarExtractionProgress(
+      stage: stage,
+      progress: complete ? 1 : _ratio(compressedBytes, total ?? 0),
+      compressedBytesRead: compressedBytes,
+      totalCompressedBytes: complete ? compressedBytes : total,
+      tarBytesWritten: tarBytes,
+      entriesExtracted: entries,
+      currentEntry:
+          stage == ZstandardNativeTarExtractionStage.extracting ? entry : null,
+    ));
+  }
+}
+
+Stream<Uint8List> _decompress(
+  ZstandardNativeBindings bindings,
+  File source,
+  _Progress progress,
+) async* {
   final dstream = bindings.ZSTD_createDStream();
   if (dstream == ffi.nullptr) {
     throw const FormatException('Failed to create zstd decompression stream');
   }
-
   final inputSize = bindings.ZSTD_DStreamInSize();
   final outputSize = bindings.ZSTD_DStreamOutSize();
-  final inputPointer = malloc<ffi.Uint8>(inputSize);
-  final outputPointer = malloc<ffi.Uint8>(outputSize);
+  final inBytes = malloc<ffi.Uint8>(inputSize);
+  final outBytes = malloc<ffi.Uint8>(outputSize);
   final input = malloc<ZSTD_inBuffer>();
   final output = malloc<ZSTD_outBuffer>();
-
-  RandomAccessFile? reader;
-  RandomAccessFile? writer;
-  var compressedBytesRead = 0;
-  var tarBytesWritten = 0;
-  var lastResult = bindings.ZSTD_initDStream(dstream);
-  _checkZstdResult(bindings, lastResult);
-
   try {
-    reader = await source.open();
-    writer = await target.open(mode: FileMode.write);
-    while (true) {
-      final chunk = await reader.read(inputSize);
-      if (chunk.isEmpty) {
-        break;
-      }
-      compressedBytesRead += chunk.length;
-      inputPointer.asTypedList(chunk.length).setAll(0, chunk);
-      input.ref
-        ..src = inputPointer.cast()
-        ..size = chunk.length
-        ..pos = 0;
-
-      while (input.ref.pos < input.ref.size) {
-        output.ref
-          ..dst = outputPointer.cast()
-          ..size = outputSize
+    var remaining = bindings.ZSTD_initDStream(dstream);
+    _checkZstdResult(bindings, remaining);
+    progress.report(ZstandardNativeTarExtractionStage.decompressing);
+    final reader = await source.open();
+    try {
+      while (true) {
+        final chunk = await reader.read(inputSize);
+        if (chunk.isEmpty) break;
+        inBytes.asTypedList(chunk.length).setAll(0, chunk);
+        input.ref
+          ..src = inBytes.cast()
+          ..size = chunk.length
           ..pos = 0;
-        lastResult = bindings.ZSTD_decompressStream(dstream, output, input);
-        _checkZstdResult(bindings, lastResult);
-        if (output.ref.pos > 0) {
-          final bytes = Uint8List.fromList(
-            outputPointer.asTypedList(output.ref.pos),
-          );
-          await writer.writeFrom(bytes);
-          tarBytesWritten += output.ref.pos;
-        }
+        do {
+          output.ref
+            ..dst = outBytes.cast()
+            ..size = outputSize
+            ..pos = 0;
+          final before = input.ref.pos;
+          remaining = bindings.ZSTD_decompressStream(dstream, output, input);
+          _checkZstdResult(bindings, remaining);
+          progress.compressedBytes += input.ref.pos - before;
+          progress.tarBytes += output.ref.pos;
+          if (output.ref.pos > 0) {
+            yield Uint8List.fromList(outBytes.asTypedList(output.ref.pos));
+          }
+        } while (input.ref.pos < chunk.length ||
+            (remaining != 0 && output.ref.pos == outputSize));
+        progress.report(ZstandardNativeTarExtractionStage.extracting);
       }
-
-      onProgress?.call(
-        ZstandardNativeTarExtractionProgress(
-          stage: ZstandardNativeTarExtractionStage.decompressing,
-          progress: _weightedProgress(
-            stageStart: 0,
-            stageEnd: 0.5,
-            stageProgress:
-                _ratio(compressedBytesRead, totalCompressedBytes ?? 0),
-          ),
-          compressedBytesRead: compressedBytesRead,
-          totalCompressedBytes: totalCompressedBytes,
-          tarBytesWritten: tarBytesWritten,
-          entriesExtracted: 0,
-        ),
-      );
-      await Future<void>.delayed(Duration.zero);
+      if (remaining != 0) throw const FormatException('Incomplete zstd frame');
+    } finally {
+      await reader.close();
     }
-
-    await writer.flush();
-    if (lastResult != 0) {
-      throw const FormatException('Incomplete zstd frame');
-    }
-    return (
-      compressedBytesRead: compressedBytesRead,
-      tarBytesWritten: tarBytesWritten,
-    );
   } finally {
-    await writer?.close();
-    await reader?.close();
     bindings.ZSTD_freeDStream(dstream);
-    malloc.free(inputPointer);
-    malloc.free(outputPointer);
     malloc.free(input);
     malloc.free(output);
+    malloc.free(inBytes);
+    malloc.free(outBytes);
   }
 }
 
-Future<int> _extractTarFile({
-  required File tarFile,
-  required Directory outputDirectory,
-  required bool overwrite,
-  required int compressedBytesRead,
-  required int tarBytesWritten,
-  required void Function(ZstandardNativeTarExtractionProgress progress)?
-      onProgress,
-}) async {
-  final rootPath = path.normalize(outputDirectory.absolute.path);
-  final tarLength = tarBytesWritten;
-  final reader = await tarFile.open();
-  var entriesExtracted = 0;
-  var tarBytesRead = 0;
+/// Reads headers and metadata across chunk boundaries. File payloads are
+/// written a slice at a time, with at most one write in flight.
+class _TarInput {
+  _TarInput(Stream<Uint8List> chunks) : _chunks = StreamIterator(chunks);
+  final StreamIterator<Uint8List> _chunks;
+  Uint8List _chunk = Uint8List(0);
+  int _offset = 0;
+  bool _ended = false;
+
+  Future<bool> hasBytes() async {
+    if (_offset < _chunk.length) return true;
+    if (_ended) return false;
+    if (!await _chunks.moveNext()) {
+      _ended = true;
+      return false;
+    }
+    _chunk = _chunks.current;
+    _offset = 0;
+    return true;
+  }
+
+  Future<Uint8List> read(int size) async {
+    final result = Uint8List(size);
+    var offset = 0;
+    await consume(size, (chunk, start, end) {
+      result.setRange(offset, offset + end - start, chunk, start);
+      offset += end - start;
+    });
+    return result;
+  }
+
+  Future<void> consume(int size,
+      [FutureOr<void> Function(Uint8List, int, int)? write]) async {
+    while (size > 0) {
+      if (!await hasBytes()) {
+        throw const FormatException('Unexpected end of tar');
+      }
+      final count = math.min(size, _chunk.length - _offset);
+      if (write != null) await write(_chunk, _offset, _offset + count);
+      _offset += count;
+      size -= count;
+    }
+  }
+
+  Future<void> drain() async {
+    while (await hasBytes()) {
+      _offset = _chunk.length;
+    }
+  }
+
+  Future<void> close() => _chunks.cancel();
+}
+
+Future<void> _extractEntries(
+    _TarInput reader, String root, bool overwrite, _Progress progress) async {
   String? nextName;
-
-  try {
-    while (tarBytesRead < tarLength) {
-      final header = await reader.read(512);
-      if (header.isEmpty) {
-        break;
+  while (await reader.hasBytes()) {
+    final header = await reader.read(512);
+    if (_isZeroBlock(header)) return;
+    final headerName = _parseTarName(header);
+    final type = header[156] == 0 ? '0' : String.fromCharCode(header[156]);
+    final size = _parseTarOctal(header, 124, 12);
+    if (size < 0) throw const FormatException('Negative tar entry size');
+    final name = nextName ?? headerName;
+    nextName = null;
+    if (type == 'L' ||
+        headerName == '././@LongLink' ||
+        type == 'x' ||
+        type == 'X') {
+      if (size > 1024 * 1024) {
+        throw const FormatException('Tar metadata is too large');
       }
-      if (header.length != 512) {
-        throw const FormatException('Invalid tar header');
+      final bytes = await reader.read(size);
+      nextName = type == 'L' || headerName == '././@LongLink'
+          ? _stripTrailingNull(utf8.decode(bytes, allowMalformed: true))
+          : _parsePaxPath(bytes);
+    } else if (type == 'g' || type == 'G') {
+      await reader.consume(size);
+    } else {
+      progress.entry = name;
+      switch (type) {
+        case '5':
+          await _prepareDirectory(name, root);
+          await reader.consume(size);
+        case '0':
+          final output = await _prepareFile(name, root, overwrite: overwrite);
+          final writer = await File(output).open(mode: FileMode.write);
+          try {
+            await reader.consume(size, (bytes, start, end) async {
+              await writer.writeFrom(bytes, start, end);
+            });
+          } finally {
+            await writer.close();
+          }
+        case '1':
+        case '2':
+          throw FormatException('Refusing to extract link entry: $name');
+        default:
+          throw FormatException('Unsupported tar entry type "$type": $name');
       }
-      tarBytesRead += 512;
-      if (_isZeroBlock(header)) {
-        break;
-      }
-
-      final headerName = _parseTarName(header);
-      final typeFlag =
-          header[156] == 0 ? '0' : String.fromCharCode(header[156]);
-      final size = _parseTarOctal(header, 124, 12);
-      final entryName = nextName ?? headerName;
-      nextName = null;
-
-      if (headerName == '././@LongLink' || typeFlag == 'L') {
-        nextName = _stripTrailingNull(
-          await _readTarMetadata(reader, size, 'GNU long name'),
-        );
-        tarBytesRead += _tarStoredSize(size);
-        continue;
-      }
-
-      if (typeFlag == 'x' || typeFlag == 'X') {
-        final records = await _readTarMetadata(reader, size, 'PAX header');
-        final pax = _parsePaxRecords(records);
-        nextName = pax['path'];
-        tarBytesRead += _tarStoredSize(size);
-        continue;
-      }
-
-      if (typeFlag == 'g' || typeFlag == 'G') {
-        await _skipTarEntryContent(reader, size);
-        tarBytesRead += _tarStoredSize(size);
-        continue;
-      }
-
-      if (typeFlag == '1' || typeFlag == '2') {
-        throw FormatException('Refusing to extract link entry: $entryName');
-      }
-
-      if (typeFlag == '5') {
-        await _prepareDirectory(entryName, rootPath);
-        if (size > 0) {
-          await _skipTarEntryContent(reader, size);
-          tarBytesRead += _tarStoredSize(size);
-        }
-        entriesExtracted += 1;
-      } else if (typeFlag == '0') {
-        tarBytesRead = await _extractTarFileEntry(
-          reader: reader,
-          entryName: entryName,
-          size: size,
-          rootPath: rootPath,
-          overwrite: overwrite,
-          tarBytesRead: tarBytesRead,
-          tarLength: tarLength,
-          compressedBytesRead: compressedBytesRead,
-          tarBytesWritten: tarBytesWritten,
-          entriesExtracted: entriesExtracted,
-          onProgress: onProgress,
-        );
-        entriesExtracted += 1;
-      } else {
-        throw FormatException(
-            'Unsupported tar entry type "$typeFlag": $entryName');
-      }
-
-      onProgress?.call(
-        ZstandardNativeTarExtractionProgress(
-          stage: ZstandardNativeTarExtractionStage.extracting,
-          progress: _weightedProgress(
-            stageStart: 0.5,
-            stageEnd: 1,
-            stageProgress: _ratio(tarBytesRead, tarLength),
-          ),
-          compressedBytesRead: compressedBytesRead,
-          totalCompressedBytes: compressedBytesRead,
-          tarBytesWritten: tarBytesWritten,
-          entriesExtracted: entriesExtracted,
-          currentEntry: entryName,
-        ),
-      );
-      await Future<void>.delayed(Duration.zero);
+      progress.entries++;
+      progress.report(ZstandardNativeTarExtractionStage.extracting);
     }
-    return entriesExtracted;
-  } finally {
-    await reader.close();
+    await reader.consume(_tarPadding(size));
   }
 }
 
-Future<int> _extractTarFileEntry({
-  required RandomAccessFile reader,
-  required String entryName,
-  required int size,
-  required String rootPath,
-  required bool overwrite,
-  required int tarBytesRead,
-  required int tarLength,
-  required int compressedBytesRead,
-  required int tarBytesWritten,
-  required int entriesExtracted,
-  required void Function(ZstandardNativeTarExtractionProgress progress)?
-      onProgress,
-}) async {
-  final outputPath = await _prepareFile(
-    entryName,
-    rootPath,
-    overwrite: overwrite,
-  );
-  final writer = await File(outputPath).open(mode: FileMode.write);
-  var remaining = size;
-  try {
-    while (remaining > 0) {
-      final chunkSize = math.min(1024 * 1024, remaining);
-      final chunk = await reader.read(chunkSize);
-      if (chunk.isEmpty) {
-        throw FormatException('Unexpected end of tar entry: $entryName');
-      }
-      await writer.writeFrom(chunk);
-      remaining -= chunk.length;
-      tarBytesRead += chunk.length;
-      onProgress?.call(
-        ZstandardNativeTarExtractionProgress(
-          stage: ZstandardNativeTarExtractionStage.extracting,
-          progress: _weightedProgress(
-            stageStart: 0.5,
-            stageEnd: 1,
-            stageProgress: _ratio(tarBytesRead, tarLength),
-          ),
-          compressedBytesRead: compressedBytesRead,
-          totalCompressedBytes: compressedBytesRead,
-          tarBytesWritten: tarBytesWritten,
-          entriesExtracted: entriesExtracted,
-          currentEntry: entryName,
-        ),
-      );
-      await Future<void>.delayed(Duration.zero);
+// Only traverse the private staging tree. Refuse to follow destination links
+// when merging into an existing directory.
+Future<void> _publish(Directory staged, Directory target, String stageRoot,
+    bool overwrite) async {
+  await for (final entry in staged.list(followLinks: false)) {
+    final dest = path.join(target.absolute.path, path.basename(entry.path));
+    if (path.equals(dest, stageRoot)) {
+      throw FormatException('Reserved output path: $dest');
     }
-  } finally {
-    await writer.close();
+    if (entry is Directory) {
+      final type = await FileSystemEntity.type(dest, followLinks: false);
+      if (type != FileSystemEntityType.directory &&
+          type != FileSystemEntityType.notFound) {
+        throw FileSystemException('Expected a directory', dest);
+      }
+      final dir = Directory(dest);
+      await dir.create();
+      await _publish(entry, dir, stageRoot, overwrite);
+    } else if (entry is File) {
+      final file = File(dest);
+      if (!overwrite) await file.create(exclusive: true);
+      try {
+        await entry.rename(dest);
+      } catch (_) {
+        if (!overwrite) await file.delete();
+        rethrow;
+      }
+    }
   }
-  final padding = _tarPadding(size);
-  if (padding > 0) {
-    await reader.setPosition(await reader.position() + padding);
-    tarBytesRead += padding;
-  }
-  return tarBytesRead;
 }
 
 Future<void> _prepareDirectory(String entryName, String rootPath) async {
@@ -482,58 +411,34 @@ int _parseTarOctal(Uint8List header, int offset, int length) {
   return int.parse(raw, radix: 8);
 }
 
-Future<String> _readTarMetadata(
-  RandomAccessFile reader,
-  int size,
-  String label,
-) async {
-  const maxMetadataSize = 1024 * 1024;
-  if (size > maxMetadataSize) {
-    throw FormatException('$label is too large');
-  }
-  final bytes = await reader.read(size);
-  if (bytes.length != size) {
-    throw FormatException('Unexpected end of $label');
-  }
-  final padding = _tarPadding(size);
-  if (padding > 0) {
-    await reader.setPosition(await reader.position() + padding);
-  }
-  return utf8.decode(bytes, allowMalformed: true);
-}
-
-Future<void> _skipTarEntryContent(RandomAccessFile reader, int size) async {
-  await reader.setPosition(await reader.position() + _tarStoredSize(size));
-}
-
-Map<String, String> _parsePaxRecords(String records) {
-  final values = <String, String>{};
+// PAX record lengths are byte counts, even when the path is multibyte UTF-8.
+String? _parsePaxPath(Uint8List bytes) {
+  String? name;
   var offset = 0;
-  while (offset < records.length) {
-    final space = records.indexOf(' ', offset);
-    if (space == -1) {
+  while (offset < bytes.length) {
+    final space = bytes.indexOf(32, offset);
+    if (space < 0) break;
+    final length = int.tryParse(String.fromCharCodes(bytes, offset, space));
+    if (length == null ||
+        length <= space - offset + 1 ||
+        offset + length > bytes.length) {
       break;
     }
-    final length = int.tryParse(records.substring(offset, space));
-    if (length == null || length <= 0 || offset + length > records.length) {
-      break;
-    }
-    final record = records.substring(space + 1, offset + length).trimRight();
-    final equals = record.indexOf('=');
-    if (equals > 0) {
-      values[record.substring(0, equals)] = record.substring(equals + 1);
+    final record = utf8.decode(
+        Uint8List.sublistView(bytes, space + 1, offset + length),
+        allowMalformed: true);
+    if (record.startsWith('path=')) {
+      name = record.substring(5).replaceFirst(RegExp(r'\n$'), '');
     }
     offset += length;
   }
-  return values;
+  return name;
 }
 
 String _stripTrailingNull(String value) {
   final index = value.indexOf('\u0000');
   return index == -1 ? value : value.substring(0, index);
 }
-
-int _tarStoredSize(int size) => size + _tarPadding(size);
 
 int _tarPadding(int size) {
   final remainder = size % 512;
@@ -545,7 +450,8 @@ String _safeOutputPath(String rootPath, String entryName) {
     throw FormatException('Unsafe tar entry path: $entryName');
   }
   final outputPath = path.normalize(path.join(rootPath, entryName));
-  if (outputPath != rootPath && !path.isWithin(rootPath, outputPath)) {
+  if (!path.equals(outputPath, rootPath) &&
+      !path.isWithin(rootPath, outputPath)) {
     throw FormatException('Unsafe tar entry path: $entryName');
   }
   return outputPath;
@@ -556,14 +462,6 @@ double _ratio(int value, int total) {
     return 0;
   }
   return (value / total).clamp(0.0, 1.0);
-}
-
-double _weightedProgress({
-  required double stageStart,
-  required double stageEnd,
-  required double stageProgress,
-}) {
-  return (stageStart + (stageEnd - stageStart) * stageProgress).clamp(0.0, 1.0);
 }
 
 void _checkZstdResult(ZstandardNativeBindings bindings, int result) {

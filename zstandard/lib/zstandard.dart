@@ -63,7 +63,9 @@ class Zstandard {
 
   /// Extracts a `.tar.zst` archive to [outputDirectoryPath].
   ///
-  /// Supported by the iOS and Android platform implementations.
+  /// On iOS and Android, entries stream into a private directory inside
+  /// [outputDirectoryPath]. Once decompression succeeds, the files are moved
+  /// into place. [temporaryDirectoryPath] is accepted for API compatibility.
   Future<ZstandardTarExtractionResult> extractTarZst({
     required String archivePath,
     required String outputDirectoryPath,
