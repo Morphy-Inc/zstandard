@@ -8,7 +8,7 @@ repository: https://github.com/vypdev/zstandard/tree/master/zstandard_android
 
 environment:
   sdk: ^3.6.0
-  flutter: '>=3.3.0'
+  flutter: '>=3.44.0'
 
 dependencies:
   flutter:

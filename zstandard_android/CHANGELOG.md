@@ -1,3 +1,7 @@
+## Unreleased
+
+- Migrate the Android build to built-in Kotlin. Requires Flutter 3.44 or later.
+
 ## 1.5.0 - Dependencies Updated
 
 - Updated direct dependencies
